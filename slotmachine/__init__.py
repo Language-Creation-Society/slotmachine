@@ -8,7 +8,6 @@ import time
 import logging
 import pulp
 
-
 class Unsatisfiable(Exception):
     pass
 
@@ -16,7 +15,7 @@ class Unsatisfiable(Exception):
 class SlotMachine(object):
     Talk = namedtuple(
         "Talk",
-        ("id", "duration", "venues", "speakers", "preferred_venues", "preferred_slots"),
+        ("id", "duration", "venues", "speakers", "preferred_venues", "preferred_slots", "slots", "plenary"),
     )
     # If preferred venues and/or slots are not specified, assume there are no preferences
     Talk.__new__.__defaults__ = ([], [])
@@ -101,6 +100,17 @@ class SlotMachine(object):
                     pulp.lpSum(self.active(slot, talk.id, v) for talk in talks) <= 1
                 )
 
+        # only allow allowed things
+        for talk in talks:
+            self.problem.addConstraint(
+                pulp.lpSum(
+                    self.start_var(s, talk.id, v)
+                    for v in talk.venues
+                    for s in talk.slots
+                )
+                == 1
+            )
+
         self.problem += (
             5
             * pulp.lpSum(
@@ -143,6 +153,19 @@ class SlotMachine(object):
             )
         )
 
+        # plenary talks can't have anything else parallel
+        for talk in talks:
+            if talk.plenary == 1:
+                for slot in self.slots_available:
+                    self.problem.addConstraint(
+                        pulp.lpSum(
+                            (self.active(slot, t.id, v) * t.plenary * 100) + self.active(slot, t.id, v)
+                            for t in talks
+                            for v in venues
+                        )
+                        <= 102
+                    )
+
         talks_by_speaker: dict[str, list[int]] = {}
         for talk in talks:
             for speaker in talk.speakers:
@@ -161,6 +184,7 @@ class SlotMachine(object):
                         )
                         <= 1
                     )
+        
         return self.problem
 
     def schedule_talks(self, talks: Iterable[Talk], old_talks=[]):
@@ -202,11 +226,11 @@ class SlotMachine(object):
 
     @classmethod
     def num_slots(self, start_time, end_time):
-        return int((end_time - start_time).total_seconds() / 60 / 10)
+        return int((end_time - start_time).total_seconds() / 60 / 5) # /10
 
     @classmethod
     def calculate_slots(self, event_start, range_start, range_end, spacing_slots=1):
-        slot_start = int((range_start - event_start).total_seconds() / 60 / 10)
+        slot_start = int((range_start - event_start).total_seconds() / 60 / 5) # /10
         # We add the number of slots that must be between events to the end to
         # allow events to finish in the last period of the schedule
         return range(
@@ -215,10 +239,10 @@ class SlotMachine(object):
         )
 
     def calc_time(self, event_start: datetime, slots: int):
-        return event_start + relativedelta.relativedelta(minutes=slots * 10)
+        return event_start + relativedelta.relativedelta(minutes=slots * 5) # * 10
 
     def calc_slot(self, event_start: datetime, time: datetime):
-        return int((time - event_start).total_seconds() / 60 / 10)
+        return int((time - event_start).total_seconds() / 60 / 5) # /10
 
     def schedule(self, schedule: dict, spacing_slots: int = 1) -> list[dict]:
         talks = []
@@ -234,6 +258,11 @@ class SlotMachine(object):
             spacing_slots = event.get("spacing_slots", spacing_slots)
             slots = []
             preferred_slots = []
+            
+            if "plenary" in event:
+                plenary = event["plenary"]
+            else:
+                plenary = 0
 
             for trange in event["time_ranges"]:
                 event_slots = SlotMachine.calculate_slots(
@@ -264,12 +293,14 @@ class SlotMachine(object):
                 self.Talk(
                     id=event["id"],
                     venues=event["valid_venues"],
+                    slots=slots,
                     speakers=event["speakers"],
                     # We add the number of spacing slots that must be between
                     # events to the duration
-                    duration=int(event["duration"] / 10) + spacing_slots,
+                    duration=int(event["duration"] / 5) + spacing_slots, # / 10
                     preferred_venues=event.get("preferred_venues", []),
                     preferred_slots=preferred_slots,
+                    plenary=plenary
                 )
             )
 
