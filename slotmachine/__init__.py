@@ -21,7 +21,7 @@ class SlotMachine(object):
 
     Venue = namedtuple(
         "venue",
-        ("id", "name", "capacity" ),
+        ("id", "name", "capacity", "slots" ),
     )
 
     Person = namedtuple(
@@ -166,16 +166,16 @@ class SlotMachine(object):
                 == 1
             )
 
-        # # At most one talk may be active in a given venue and slot.
-        # for vid in venue_ids:
-        #     for slot in self.slots_available:
-        #         self.problem.addConstraint(
-        #             pulp.lpSum(
-        #                 self.active(slot, talk.id, vid)
-        #                 for talk in talks
-        #             )
-        #             <= 1
-        #         )
+        # At most one talk may be active in a given venue and slot.
+        for vid in venue_ids:
+            for slot in self.slots_available:
+                self.problem.addConstraint(
+                    pulp.lpSum(
+                        self.active(slot, talk.id, vid)
+                        for talk in talks
+                    )
+                    <= 1
+                )
 
         # # people can attend one thing at a time
         # for person in people:
@@ -230,6 +230,17 @@ class SlotMachine(object):
                     self.active(s, talk.id, vid)
                     for vid in talk.venues
                     for s in (self.slots_available - set(talk.slots))
+                )
+                == 0
+            )
+
+        # disallow venue's unavailable slots
+        for venue in venues:
+            self.problem.addConstraint(
+                pulp.lpSum(
+                    self.active(s, tid, venue.id)
+                    for tid in talk_ids
+                    for s in (self.slots_available - set(venue.slots))
                 )
                 == 0
             )
@@ -423,11 +434,23 @@ class SlotMachine(object):
         self.people_by_name = {person.name: person for person in people}
 
         for venue in schedule["venues"]:
+            slots = []
+
+            for trange in venue.get("time_ranges",[]):
+                venue_slots = SlotMachine.calculate_slots(
+                    event_start,
+                    parser.parse(trange["start"]),
+                    parser.parse(trange["end"]),
+                    0,
+                )
+                slots.extend(venue_slots)
+
             venues.append(
                 self.Venue(
                     id=venue["id"],
                     name=venue["name"],
-                    capacity=venue["capacity"]
+                    capacity=venue["capacity"],
+                    slots=slots
                 )
             )
 
