@@ -31,7 +31,7 @@ class SlotMachine(object):
 
     Talk = namedtuple(
         "Talk",
-        ("id", "duration", "venues", "speakers", "preferred_venues", "preferred_slots", "slots", "plenary", "irl_only"),
+        ("id", "duration", "venues", "speakers", "preferred_venues", "preferred_slots", "slots", "plenary", "irl_only", "prereqs", "rest" ),
     )
     # If preferred venues and/or slots are not specified, assume there are no preferences
     Talk.__new__.__defaults__ = ([], [])
@@ -46,6 +46,8 @@ class SlotMachine(object):
         self.talk_permissions = {}
         self.slots_available = set()
         self.var_cache: dict[str, pulp.LpVariable] = {}
+        self.suspected_constr = []
+        self.suspected_var = []
 
     def start_var(self, slot, talk_id, venue) -> pulp.LpVariable:
         """A 0/1 variable that is 1 if talk with ID talk_id begins in this
@@ -152,7 +154,8 @@ class SlotMachine(object):
                     for vid in venue_ids
                     for slot in self.slots_available
                 )
-                == 1
+                == 1,
+                name = "ONE_START_%d" % (talk.id)
             )
 
         # require talks in times & places they're allowed
@@ -163,7 +166,8 @@ class SlotMachine(object):
                     for vid in talk.venues
                     for s in talk.slots
                 )
-                == 1
+                == 1,
+                name = "ALLOWED_TIME_PLACE_%d" % (talk.id)
             )
 
         # At most one talk may be active in a given venue and slot.
@@ -174,54 +178,58 @@ class SlotMachine(object):
                         self.active(slot, talk.id, vid)
                         for talk in talks
                     )
-                    <= 1
+                    <= 1,
+                    name = "ONE_ACTIVE_%d_%d" % (vid, slot)
                 )
 
-        # # people can attend one thing at a time
-        # for person in people:
+        # people can attend one thing at a time
+        for person in people:
+            for slot in self.slots_available:
+                self.problem.addConstraint(
+                    pulp.lpSum(
+                        self.attending(slot, tid, person.id)
+                        for tid in talk_ids
+                    )
+                    <= 1,
+                    name = "UNIPRESENCE_%d_%d" % (person.id, slot)
+                )
+
+        # # room capacity
+        # for vid in venue_ids:
         #     for slot in self.slots_available:
-        #         self.problem.addConstraint(
-        #             pulp.lpSum(
-        #                 self.attending(slot, tid, person.id)
-        #                 for tid in talk_ids
+        #         for talk in talks:
+        #             self.problem.addConstraint(
+        #                 pulp.lpSum(
+        #                     self.attending(slot, talk.id, pid)
+        #                     for pid in people_ids
+        #                     if (people_by_id[pid].attending == 1)
+        #                     if (self.active(slot,talk.id, vid) == 1)
+        #                 )
+        #                 <= self.venues_by_id[vid].capacity
         #             )
-        #             <= 1
-        #         )
-        #
-        # # # room capacity
-        # # for vid in venue_ids:
-        # #     for slot in self.slots_available:
-        # #         for talk in talks:
-        # #             self.problem.addConstraint(
-        # #                 pulp.lpSum(
-        # #                     self.attending(slot, talk.id, pid)
-        # #                     for pid in people_ids
-        # #                     if (people_by_id[pid].attending == 1)
-        # #                     if (self.active(slot,talk.id, vid) == 1)
-        # #                 )
-        # #                 <= self.venues_by_id[vid].capacity
-        # #             )
-        #
-        # # require speakers to attend
-        # for talk in talks:
-        #     for speaker in talk.speakers:
-        #         self.problem.addConstraint(
-        #             pulp.lpSum(
-        #                 self.attending(s, talk.id, speaker)
-        #                 for s in talk.slots
-        #             )
-        #             == 1
-        #         )
-        #
-        # # disallow person's unavailable slots
-        # for person in people:
-        #     self.problem.addConstraint(
-        #         pulp.lpSum(
-        #             self.attending(s, talk.id, person.id)
-        #             for s in (self.slots_available - set(person.slots))
-        #         )
-        #         == 0
-        #     )
+
+        # require speakers to attend
+        for talk in talks:
+            for speaker_id in talk.speakers:
+                self.problem.addConstraint(
+                    pulp.lpSum(
+                        self.attending(s, talk.id, speaker_id)
+                        for s in talk.slots
+                    )
+                    == 1,
+                    name = "SPEAKER_ATTENDS/_%d_%d" % (talk.id, speaker_id)
+                )
+
+        # disallow person's unavailable slots
+        for person in people:
+            self.problem.addConstraint(
+                pulp.lpSum(
+                    self.attending(s, talk.id, person.id)
+                    for s in (self.slots_available - set(person.slots))
+                )
+                == 0,
+                name = "PERSON_AVAILABILITY_%d" % (person.id)
+            )
 
         # disallow talk's unavailable slots
         for talk in talks:
@@ -231,7 +239,8 @@ class SlotMachine(object):
                     for vid in talk.venues
                     for s in (self.slots_available - set(talk.slots))
                 )
-                == 0
+                == 0,
+                name = "TALK_NOT_IN_BAD_SLOTS_%d" % (talk.id)
             )
 
         # disallow venue's unavailable slots
@@ -242,7 +251,8 @@ class SlotMachine(object):
                     for tid in talk_ids
                     for s in (self.slots_available - set(venue.slots))
                 )
-                == 0
+                == 0,
+                name = "VENUE_NOT_IN_BAD_SLOTS_%d" % (venue.id)
             )
 
         # disallow invalid venues
@@ -253,23 +263,65 @@ class SlotMachine(object):
                     for vid in (venue_ids - set(talk.venues))
                     for s in self.slots_available
                 )
-                == 0
+                == 0,
+                name = "TALK_NOT_IN_INVALID_VENUE_%d" % (talk.id)
             )
 
-        # # plenary talks can't have anything else parallel
-        # for slot in self.slots_available:
-        #     self.problem.addConstraint(
-        #         pulp.lpSum(
-        #             (self.active(slot, t.id, vid) * t.plenary * 100) + self.active(slot, t.id, vid)
-        #             for t in talks
-        #             for vid in venue_ids
+        # Require a talk (talk2) to come after its prerequisites (talk1):
+        # talk2 shouldn't start at or before s if the last segment of talk1
+        # is at or after s.
+        # for talk2 in talks:
+        #     for t1id in talk2.prereqs:
+        #         talk1 = self.talks_by_id[t1id]
+        #         for s in self.slots_available:
+        #             self.problem.addConstraint(
+        #                 pulp.lpSum([
+        #                     self.start_var(earlier, talk2.id, vid)
+        #                     for vid in venue_ids
+        #                     for earlier in self.slots_available
+        #                     if earlier <= s
+        #                 ] + [
+        #                     self.start_var(later, talk1.id, vid)
+        #                     for vid in venue_ids
+        #                     for later in self.slots_available
+        #                     if later + talk1.duration - 1 >= s
+        #                 ])
+        #                 <= 1
+        #             )
+        # Require a talk (talk2) to come after its prerequisites (talk1):
+        # start time of talk2 - start time of talk1 >= duration of talk1.
+        # for talk2 in talks:
+        #     for t1id in talk2.prereqs:
+        #         talk1 = self.talks_by_id[t1id]
+        #         self.problem.addConstraint(
+        #             pulp.LpAffineExpression([
+        #                 (self.start_var(vid, talk2.id, s), s)
+        #                 for s in self.slots_available
+        #                 for vid in venue_ids
+        #             ] + [
+        #                 (self.start_var(vid, talk1.id, s), -s)
+        #                 for s in self.slots_available
+        #                 for vid in venue_ids
+        #             ])
+        #             >= talk1.duration
         #         )
-        #         <= 101 # FIXME
-        #     )
+        #
+        # plenary talks can't have anything else parallel
+        for slot in self.slots_available:
+            self.problem.addConstraint(
+                pulp.lpSum(
+                    (self.active(slot, t.id, vid) * t.plenary * 100) + self.active(slot, t.id, vid)
+                    for t in talks
+                    for vid in venue_ids
+                )
+                <= 101, # FIXME
+                name = "PLENARY_EXCLUSIVITY_%d" % (slot)
+            )
 
         # For each talk by the same speaker it can only be active in at most one
         # talk slot at the same time.
-        for conflicts in self.talks_by_speaker.values():
+        for speaker_id in self.talks_by_speaker:
+            conflicts = self.talks_by_speaker[speaker_id]
             if len(conflicts) > 1:
                 for slot in self.slots_available:
                     self.problem.addConstraint(
@@ -278,7 +330,8 @@ class SlotMachine(object):
                             for talk_id in conflicts
                             for vid in venue_ids
                         )
-                        <= 1
+                        <= 1,
+                        name = "NO_SPEAKER_CONFLICTS_%d_%d" % (speaker_id, slot)
                     )
 
         self.problem += (
@@ -346,6 +399,10 @@ class SlotMachine(object):
         problem.solve(pulp.COIN_CMD(dual=0, threads=8, msg=1, keepFiles=0))
 
         if pulp.LpStatus[self.problem.status] != "Optimal":
+            print("Violated constraint:")
+            print(self.violated_constr())
+            print("Violating variable:")
+            print(self.violating_var())
             raise Unsatisfiable()
 
         self.log.info(
@@ -361,6 +418,29 @@ class SlotMachine(object):
             for venue in venues
             if pulp.value(self.start_var(slot, talk.id, venue.id))
         ]
+
+    # https://blend360.github.io/OptimizationBlog/solution%20notebook/infeasibility_resolution_with_pulp/
+    def violated_constr(self):
+        ret_suspected_constr = []
+        self.suspected_constr = []
+        for c in self.problem.constraints.values():
+            if not c.valid(0):
+                ## check if the constraint is a soft constraint;
+                ## soft constraints should not cause infeasibility and may be ignored
+                constr_name = [c.name, c.__dict__, c.items()] # c.toDict()['name']
+                ret_suspected_constr.append(constr_name)
+                self.suspected_constr.append(c)
+        return ret_suspected_constr
+
+    def violating_var(self):
+        ret_suspected_var = []
+        self.suspected_var = []
+        for v in self.problem.variables():
+            if not v.valid(0):
+                var_name = [v.name, v.__dict__] # v.toDict()['name']
+                ret_suspected_var.append(var_name)
+                self.suspected_var.append(v)
+        return ret_suspected_var
 
     @classmethod
     def num_slots(self, start_time, end_time):
@@ -513,7 +593,9 @@ class SlotMachine(object):
                     preferred_venues=event.get("preferred_venues", []),
                     preferred_slots=preferred_slots,
                     plenary=plenary,
-                    irl_only=irl_only
+                    irl_only=irl_only,
+                    prereqs=event.get("prereqs", []),
+                    rest=event.get("rest", 0)
                 )
             )
 
