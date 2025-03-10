@@ -268,44 +268,24 @@ class SlotMachine(object):
             )
 
         # Require a talk (talk2) to come after its prerequisites (talk1):
-        # talk2 shouldn't start at or before s if the last segment of talk1
-        # is at or after s.
-        # for talk2 in talks:
-        #     for t1id in talk2.prereqs:
-        #         talk1 = self.talks_by_id[t1id]
-        #         for s in self.slots_available:
-        #             self.problem.addConstraint(
-        #                 pulp.lpSum([
-        #                     self.start_var(earlier, talk2.id, vid)
-        #                     for vid in venue_ids
-        #                     for earlier in self.slots_available
-        #                     if earlier <= s
-        #                 ] + [
-        #                     self.start_var(later, talk1.id, vid)
-        #                     for vid in venue_ids
-        #                     for later in self.slots_available
-        #                     if later + talk1.duration - 1 >= s
-        #                 ])
-        #                 <= 1
-        #             )
-        # Require a talk (talk2) to come after its prerequisites (talk1):
         # start time of talk2 - start time of talk1 >= duration of talk1.
-        # for talk2 in talks:
-        #     for t1id in talk2.prereqs:
-        #         talk1 = self.talks_by_id[t1id]
-        #         self.problem.addConstraint(
-        #             pulp.LpAffineExpression([
-        #                 (self.start_var(vid, talk2.id, s), s)
-        #                 for s in self.slots_available
-        #                 for vid in venue_ids
-        #             ] + [
-        #                 (self.start_var(vid, talk1.id, s), -s)
-        #                 for s in self.slots_available
-        #                 for vid in venue_ids
-        #             ])
-        #             >= talk1.duration
-        #         )
-        #
+        for talk2 in talks:
+            for t1id in talk2.prereqs:
+                talk1 = self.talks_by_id[t1id]
+                self.problem.addConstraint(
+                    pulp.LpAffineExpression([
+                        (self.start_var(s, talk2.id, vid), s)
+                        for s in self.slots_available
+                        for vid in venue_ids
+                    ] + [
+                        (self.start_var(s, talk1.id, vid), -s)
+                        for s in self.slots_available
+                        for vid in venue_ids
+                    ])
+                    >= talk1.duration,
+                    name = "PREREQS_%d_%d" % (talk2.id, t1id)
+                )
+
         # plenary talks can't have anything else parallel
         for slot in self.slots_available:
             self.problem.addConstraint(
@@ -314,7 +294,7 @@ class SlotMachine(object):
                     for t in talks
                     for vid in venue_ids
                 )
-                <= 101, # FIXME
+                <= 101,
                 name = "PLENARY_EXCLUSIVITY_%d" % (slot)
             )
 
