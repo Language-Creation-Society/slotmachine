@@ -19,11 +19,11 @@ res = sm.schedule(sch)
 #problem = sm.get_problem(venues=prep["venues"], talks=prep["talks"], old_talks=prep["old_slots"], people=prep["people"], languages=prep["languages"])
 #solution = problem.solve(pulp.COIN_CMD(dual=0, threads=2, msg=1, keepFiles=0))
 
-for t in sorted(res,key=lambda x:[x["time"],x["venue"]]):
-    [t["plenary"], t["time"], t["duration"], t["venue"], t["id"], t["speakers"], t["title"], t["attending"]
+# for t in sorted(res,key=lambda x:[x["time"],x["venue"]]):
+#     [t["plenary"], t["time"], t["duration"], t["venue"], t["id"], t["speakers"], t["title"], t["attendees"]
 
 for t in sorted(res,key=lambda x:[x["venue"],x["time"]]):
-    [t["plenary"], t["time"], t["duration"], t["venue"], t["id"], t["speakers"], t["title"], t["attending"]]
+    [t["plenary"], t["time"], t["duration"], t["venue"], t["id"], t["speakers"], t["title"], t["attendees"]]
 
 
 # SlotMachine.calculate_slots(parser.parse("2025-04-11 07:00"), parser.parse("2025-04-13 07:00"), parser.\
