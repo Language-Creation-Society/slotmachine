@@ -17,13 +17,13 @@ sm = SlotMachine()
 prep = sm.prep_schedule(sch)
 res = sm.schedule(sch)
 #problem = sm.get_problem(venues=prep["venues"], talks=prep["talks"], old_talks=prep["old_slots"], people=prep["people"], languages=prep["languages"])
-#solution = problem.solve(pulp.COIN_CMD(dual=0, threads=2, msg=1, keepFiles=0))
+#solution = problem.solve(pulp.COIN_CMD(threads=12, msg=1, keepFiles=0))
 
-# for t in sorted(res,key=lambda x:[x["time"],x["venue"]]):
-#     [t["plenary"], t["time"], t["duration"], t["venue"], t["id"], t["speakers"], t["title"], t["attendees"]
+for t in sorted(res,key=lambda x:[x["time"],x["venue"]]):
+    [t["plenary"], t["time"], t["end_time"], t["duration"], sm.venues_by_id[t["venue"]].name, t["id"], t["speakers"], t["title"], [sm.people_by_id[pid].name for pid in t["attendees"]], [sm.people_by_id[pid].name for pid in t["partial_attendees"]]]
 
-for t in sorted(res,key=lambda x:[x["venue"],x["time"]]):
-    [t["plenary"], t["time"], t["duration"], t["venue"], t["id"], t["speakers"], t["title"], t["attendees"]]
+# for t in sorted(res,key=lambda x:[x["venue"],x["time"]]):
+#     [t["plenary"], t["time"], t["end_time"], t["duration"], sm.venues_by_id[t["venue"]].name, t["id"], t["speakers"], t["title"], [sm.people_by_id[pid].name for pid in t["attendees"]], [sm.people_by_id[pid].name for pid in t["partial_attendees"]]]
 
 
 # SlotMachine.calculate_slots(parser.parse("2025-04-11 07:00"), parser.parse("2025-04-13 07:00"), parser.\
