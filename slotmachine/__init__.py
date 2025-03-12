@@ -46,7 +46,7 @@ class SlotMachine(object):
 
     Talk = namedtuple(
         "Talk",
-        ("id", "duration", "durations", "venues", "speakers", "preferred_venues", "preferred_slots", "slots", "plenary", "irl_only", "prereqs", "rest", "languages", "before_rest", "after_rest", "meetup" ),
+        ("id", "duration", "durations", "venues", "speakers", "preferred_venues", "preferred_slots", "slots", "plenary", "irl_only", "prereqs", "rest", "languages", "before_rest", "after_rest", "meetup", "invite_only", "similarities" ),
     )
 
     Language = namedtuple(
@@ -77,6 +77,34 @@ class SlotMachine(object):
         durations = self.talks_by_id[talk_id].durations
 
         var = pulp.LpVariable(name, lowBound=min(durations), upBound=max(durations), cat="Integer")
+
+        self.var_cache[name] = var
+        return var
+
+    def adjacent_or_before(self, talk1_id, talk2_id, venue_id) -> pulp.LpVariable:
+        """A 0/1 variable that is 1 if talk2 starts no later than directly after talk1"""
+        name = "ADJACENT_OR_BEFORE_V_%d_%d_%d" % (talk1_id, talk2_id, venue_id)
+        if name in self.var_cache:
+            return self.var_cache[name]
+
+        if talk1_id == talk2_id:
+            var = pulp.LpVariable(name, lowBound=0, upBound=0, cat="Binary") # cat="Integer")
+        else:
+            var = pulp.LpVariable(name, cat="Binary")
+
+        self.var_cache[name] = var
+        return var
+
+    def simultaneous(self, talk1_id, talk2_id) -> pulp.LpVariable:
+        """A 0/1 variable that is 1 if talk 1 & talk 2 are simultaneous in different places"""
+        name = "SIMULTANEOUS_V_%d_%d" % (talk1_id, talk2_id)
+        if name in self.var_cache:
+            return self.var_cache[name]
+
+        if talk1_id == talk2_id:
+            var = pulp.LpVariable(name, lowBound=0, upBound=0, cat="Binary") # cat="Integer")
+        else:
+            var = pulp.LpVariable(name, cat="Binary")
 
         self.var_cache[name] = var
         return var
@@ -125,7 +153,7 @@ class SlotMachine(object):
             for s in range(slot, max(-1, slot - duration), -1)
         )
 
-        self.problem.addConstraint(variable == definition)
+        self.problem.addConstraint(variable == definition, "CONTIGUITY_%d_%d_%d" % (slot, talk_id, venue))
         self.var_cache[name] = variable
         return variable
 
@@ -250,6 +278,58 @@ class SlotMachine(object):
                     name = "UNIPRESENCE_%d_%d" % (person.id, slot)
                 )
 
+        # this just sets the adjacency variable, it isn't a constraint as such unless we tie adjacent_or_before to something else
+        # start time of talk2 - start time of talk1 + adjacencyvar*bignum <= bignum + talk2 duration
+        for talk1 in talks:
+            for talk2 in talks:
+                for vid in venue_ids:
+                    self.problem.addConstraint(
+                        pulp.LpAffineExpression([
+                            (self.start_var(s, talk2.id, vid), s)
+                            for s in self.slots_available
+                            # for vid in venue_ids
+                        ] + [
+                            (self.start_var(s, talk1.id, vid), -s)
+                            for s in self.slots_available
+                            # for vid in venue_ids
+                        ]) + 100000 * self.adjacent_or_before(talk1.id, talk2.id, vid)
+                        <= 100000 + talk2.duration,
+                        name = "ADJACENT_OR_BEFORE_C_%d_%d_%d" % (talk2.id, talk1.id, vid)
+                    )
+
+        # TODO
+        # for talk1 in talks:
+        #     for talk2 in talks:
+        #         for s in self.slots_available
+        #             self.problem.addConstraint(
+        #                 pulp.lpSum(
+        #                     self.start_var(s, talk1.id, vid)
+        #                     + self.start_var(s, talk1.id, vid)
+        #                     for vid in venue_ids
+        #                 )
+        #                 <= 1,
+        #                 name = "SIMULTANEOUS_NOT_IN_SAME_VENUE_%d_%d_%d" % (talk1.id, talk2.id, s)
+        #             )
+
+        # # TODO
+        # # this just sets the simultaneous variable, it isn't a constraint as such unless we tie adjacent_or_before to something else
+        # # start time of talk2 - start time of talk1 + simultaneous*bignum <= bignum + talk2 duration
+        # for talk1 in talks:
+        #     for talk2 in talks:
+        #         self.problem.addConstraint(
+        #             pulp.LpAffineExpression([
+        #                 (self.start_var(s, talk2.id, vid), s)
+        #                 for s in self.slots_available
+        #                 for vid in venue_ids
+        #             ] + [
+        #                 (self.start_var(s, talk1.id, vid), -s)
+        #                 for s in self.slots_available
+        #                 for vid in venue_ids
+        #             ]) + 100000 * self.simultaneous(talk1.id, talk2.id)
+        #             <= 100000 + talk2.duration,
+        #             name = "SIMULTANEOUS_C_%d_%d" % (talk2.id, talk1.id)
+        #         )
+
         # FIXME
         # # people attend something at all times they can
         # for person in people:
@@ -272,6 +352,17 @@ class SlotMachine(object):
                             self.attending_some(talk.id, person.id)
                             == 0,
                             name = "IRL_ONLY_%d_%d" % (talk.id, person.id)
+                        )
+
+        # invite-only talks
+        for talk in talks:
+            if (talk.invite_only == 1):
+                for person in people:
+                    if (person.preferences.get(talk.id, 0) == 0):
+                        self.problem.addConstraint(
+                            self.attending_some(talk.id, person.id)
+                            == 0,
+                            name = "INVITE_ONLY_%d_%d" % (talk.id, person.id)
                         )
 
         # TODO
@@ -447,7 +538,7 @@ class SlotMachine(object):
                 for slot in self.slots_available:
                     self.problem.addConstraint(
                         pulp.lpSum(
-                            (self.active(slot, t.id, vid) * t.before_rest * 100) +
+                            (self.active(slot, t.id, vid) * t.after_rest * 100) +
                             (
                                 self.active(slot - 1, t2id, vid)
                                 for t2id in (set(nonrest_talks) - set([t.id]))
@@ -500,12 +591,36 @@ class SlotMachine(object):
         self.problem += (
             5
             * pulp.lpSum(
+                # try to have similar talks together
+                self.adjacent_or_before(talk1.id, talk2.id, vid) * max(talk1.similarities.get(talk2.id, 0), talk2.similarities.get(talk1.id, 0))
+                for vid in venue_ids
+                for talk1 in talks
+                for talk2 in talks
+            )
+            + 1
+            * pulp.lpSum(
+                # attendees try to go to as much as possible
+                (
+                    self.attending_at(s, tid, pid)
+                )
+                for tid in talk_ids
+                for pid in people_ids # people_with_preferences_ids
+                for s in self.slots_available
+            )
+            + 5
+            * pulp.lpSum(
                 # attendee preferences
                 (
                     (
                         self.attending_at(s, tid, pid)
                         * self.people_by_id[pid].preferences.get(tid, (0 if (self.talks_by_id[tid].meetup == 1) else 1))
-                        * (1 + (1 * (s in self.people_by_id[pid].preferred_slots)))/2 # worth half if not in preferred slot
+                        * (
+                            1
+                            # worth extra if invite only
+                            + (0 if (self.talks_by_id[tid].invite_only == 1) else 1)
+                            # worth half if not in preferred slot
+                            + (1 * (s in self.people_by_id[pid].preferred_slots))
+                        )/2
                     ) / 7
                     # / (
                     #     min(1,sum(self.people_by_id[pid].preferences.values())) # normalize so fully satisfied person = 1
@@ -579,7 +694,7 @@ class SlotMachine(object):
         # We use COIN_CMD() over COIN() as it allows us to run in parallel mode
 
         # problem.solve(pulp.COIN_CMD(threads=12, keepFiles=0, timeLimit=14400, logPath=f'{pathlib.Path().resolve()}/coin.log')) # presolve=1, warmStart=1
-        problem.solve(pulp.GUROBI_CMD(threads=12, timeLimit=14400)) # warmStart=1, keepFiles=0, logPath=f'{pathlib.Path().resolve()}/gurobi.log'
+        problem.solve(pulp.GUROBI_CMD(threads=12, timeLimit=600)) # warmStart=1, keepFiles=0, logPath=f'{pathlib.Path().resolve()}/gurobi.log'
 
         if pulp.LpStatus[self.problem.status] != "Optimal":
             self.log.error("Violated constraint:")
@@ -749,16 +864,6 @@ class SlotMachine(object):
             slots = []
             preferred_slots = []
 
-            if "plenary" in event:
-                plenary = event["plenary"]
-            else:
-                plenary = 0
-
-            if "irl_only" in event:
-                irl_only = event["irl_only"]
-            else:
-                irl_only = 0
-
             for trange in event["time_ranges"]:
                 event_slots = SlotMachine.calculate_slots(
                     event_start,
@@ -788,6 +893,10 @@ class SlotMachine(object):
             for speaker in event["speakers"]:
                 speaker_ids.append(self.people_by_name[speaker].id)
 
+            similarities = {}
+            for talk2_id in event.get("similarities",[]):
+                similarities[int(talk2_id)] = event["similarities"][talk2_id]
+
             duration=int(math.ceil(event["duration"] / self.SLOT_INCREMENT) + spacing_slots) # / 10
 
             talks.append(
@@ -802,14 +911,16 @@ class SlotMachine(object):
                     durations=[int(math.ceil((d/self.SLOT_INCREMENT) + 1)) for d in event.get("durations", [duration])],
                     preferred_venues=event.get("preferred_venues", []),
                     preferred_slots=preferred_slots,
-                    plenary=plenary,
-                    irl_only=irl_only,
+                    plenary=event.get("plenary", 0),
+                    irl_only=event.get("irl_only", 0),
                     prereqs=event.get("prereqs", []),
                     rest=event.get("rest", 0),
                     languages=event.get("languages", [ 0 ]),  # 0 = English
                     before_rest=event.get("before_rest", 0),
                     after_rest=event.get("after_rest", 0),
-                    meetup=event.get("meetup", 0)
+                    meetup=event.get("meetup", 0),
+                    invite_only=event.get("irl_only", 0),
+                    similarities=similarities
                 )
             )
 
