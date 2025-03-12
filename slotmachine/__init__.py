@@ -521,11 +521,17 @@ class SlotMachine(object):
                 for slot in self.slots_available:
                     self.problem.addConstraint(
                         pulp.lpSum(
-                            (self.active(slot, t.id, vid) * t.before_rest * 100) +
-                            (
-                                self.active(slot + 1, t2id, vid)
-                                for t2id in (set(nonrest_talks) - set([t.id]))
-                            )
+                            (self.active(slot, t.id, vid) * t.before_rest * 100)
+                            for vid in venue_ids
+                        )
+                        + pulp.lpSum(
+                            self.active(slot + 1, t2id, vid)
+                            for t2id in (set(nonrest_talks) - set([t.id]))
+                            for vid in venue_ids
+                        )
+                        - pulp.lpSum(
+                            self.active(slot + 1, t2id, vid)
+                            for t2id in set(rest_talks)
                             for vid in venue_ids
                         )
                         <= 100,
@@ -538,14 +544,20 @@ class SlotMachine(object):
                 for slot in self.slots_available:
                     self.problem.addConstraint(
                         pulp.lpSum(
-                            (self.active(slot, t.id, vid) * t.after_rest * 100) +
-                            (
-                                self.active(slot - 1, t2id, vid)
-                                for t2id in (set(nonrest_talks) - set([t.id]))
-                            )
+                            (self.active(slot, t.id, vid) * t.after_rest * 100)
                             for vid in venue_ids
                         )
-                        <= 100,
+                        + pulp.lpSum(
+                            self.active(slot - 1, t2id, vid)
+                            for t2id in (set(nonrest_talks) - set([t.id]))
+                            for vid in venue_ids
+                        )
+                        - pulp.lpSum(
+                            self.active(slot - 1, t2id, vid)
+                            for t2id in set(rest_talks)
+                            for vid in venue_ids
+                        )
+                        <= 99,
                         name = "AFTER_REST_%d_%d" % (t.id, slot)
                     )
 
@@ -600,9 +612,7 @@ class SlotMachine(object):
             + 1
             * pulp.lpSum(
                 # attendees try to go to as much as possible
-                (
-                    self.attending_at(s, tid, pid)
-                )
+                self.attending_at(s, tid, pid)
                 for tid in talk_ids
                 for pid in people_ids # people_with_preferences_ids
                 for s in self.slots_available
@@ -693,8 +703,8 @@ class SlotMachine(object):
         # accuracy difference is negligable for this problem
         # We use COIN_CMD() over COIN() as it allows us to run in parallel mode
 
-        # problem.solve(pulp.COIN_CMD(threads=12, keepFiles=0, timeLimit=14400, logPath=f'{pathlib.Path().resolve()}/coin.log')) # presolve=1, warmStart=1
-        problem.solve(pulp.GUROBI_CMD(threads=12, timeLimit=600)) # warmStart=1, keepFiles=0, logPath=f'{pathlib.Path().resolve()}/gurobi.log'
+        # problem.solve(pulp.COIN_CMD(threads=16, keepFiles=0, timeLimit=14400, logPath=f'{pathlib.Path().resolve()}/coin.log')) # presolve=1, warmStart=1
+        problem.solve(pulp.GUROBI_CMD(threads=16, timeLimit=14400)) # warmStart=1, keepFiles=0, logPath=f'{pathlib.Path().resolve()}/gurobi.log'
 
         if pulp.LpStatus[self.problem.status] != "Optimal":
             self.log.error("Violated constraint:")
@@ -947,6 +957,7 @@ class SlotMachine(object):
         solved = self.schedule_talks( talks=prep["talks"], old_talks=prep["old_slots"], people=prep["people"], venues=prep["venues"], languages=prep["languages"])
 
         for slot_id, talk_id, venue_id, attendees, partial_attendees in solved:
+            prep["talk_data"][talk_id]["slot"] = slot_id
             prep["talk_data"][talk_id]["time"] = str(self.calc_time(prep["event_start"], slot_id))
             prep["talk_data"][talk_id]["end_time"] = str(self.calc_time(prep["event_start"], slot_id + self.talks_by_id[talk_id].duration))
             prep["talk_data"][talk_id]["venue"] = venue_id

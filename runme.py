@@ -20,7 +20,8 @@ res = sm.schedule(sch)
 #solution = problem.solve(pulp.COIN_CMD(threads=12, msg=1, keepFiles=0))
 
 for t in sorted(res,key=lambda x:[x["time"],x["venue"]]):
-    [t["plenary"], t["time"], t["end_time"], t["duration"], sm.venues_by_id[t["venue"]].name, t["id"], t["speakers"], t["title"], [sm.people_by_id[pid].name for pid in t["attendees"]], [sm.people_by_id[pid].name for pid in t["partial_attendees"]]]
+    [t["plenary"], t["id"], t["slot"], t["duration"], t["venue"], t["time"], t["end_time"], sm.venues_by_id[t["venue"]].name, t["speakers"], t["title"],  len(t["attendees"]), len(t["partial_attendees"])]
+    # [sm.people_by_id[pid].name for pid in t["attendees"]], [sm.people_by_id[pid].name for pid in t["partial_attendees"]]]
 
 # for t in sorted(res,key=lambda x:[x["venue"],x["time"]]):
 #     [t["plenary"], t["time"], t["end_time"], t["duration"], sm.venues_by_id[t["venue"]].name, t["id"], t["speakers"], t["title"], [sm.people_by_id[pid].name for pid in t["attendees"]], [sm.people_by_id[pid].name for pid in t["partial_attendees"]]]
