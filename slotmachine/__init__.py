@@ -311,7 +311,7 @@ class SlotMachine(object):
         #                 name = "SIMULTANEOUS_NOT_IN_SAME_VENUE_%d_%d_%d" % (talk1.id, talk2.id, s)
         #             )
 
-        # # TODO
+        # # TODO make a weight that prefers anticorrelated things to be scheduled against each other
         # # this just sets the simultaneous variable, it isn't a constraint as such unless we tie adjacent_or_before to something else
         # # start time of talk2 - start time of talk1 + simultaneous*bignum <= bignum + talk2 duration
         # for talk1 in talks:
@@ -472,7 +472,7 @@ class SlotMachine(object):
                 )
                 == 0,
                 name = "TALK_NOT_IN_INVALID_VENUE_%d" % (talk.id)
-            )
+           )
 
         # Require a talk (talk2) to come after its prerequisites (talk1):
         # start time of talk2 - start time of talk1 >= duration of talk1.
@@ -512,7 +512,29 @@ class SlotMachine(object):
                                 for vid in venue_ids
                             ])
                             >= talk1.duration + math.ceil(60/self.SLOT_INCREMENT),
-                            name = "REST_SPACING_%d_%d" % (t2id, t1id)
+                            name = "REST_MIN_SPACING_%d_%d" % (t2id, t1id)
+                        )
+
+        # Require rests (talk2) to come no more than 2.5 hours after the prior rest (talk1):
+        # start time of talk2 - start time of talk1 <= duration of talk1 + 2.5h.
+        for t2id in rest_talks:
+            talk2 = self.talks_by_id[t2id]
+            if talk2.rest == 1:
+                for t1id in talk2.prereqs:
+                    talk1 = self.talks_by_id[t1id]
+                    if talk1.rest == 1:
+                        self.problem.addConstraint(
+                            pulp.LpAffineExpression([
+                                (self.start_var(s, t2id, vid), s)
+                                for s in self.slots_available
+                                for vid in venue_ids
+                            ] + [
+                                (self.start_var(s, t1id, vid), -s)
+                                for s in self.slots_available
+                                for vid in venue_ids
+                            ])
+                            <= talk1.duration + math.ceil(150/self.SLOT_INCREMENT),
+                            name = "REST_MAX_SPACING_%d_%d" % (t2id, t1id)
                         )
 
         # Require some things directly before rests
@@ -703,8 +725,8 @@ class SlotMachine(object):
         # accuracy difference is negligable for this problem
         # We use COIN_CMD() over COIN() as it allows us to run in parallel mode
 
-        # problem.solve(pulp.COIN_CMD(threads=16, keepFiles=0, timeLimit=14400, logPath=f'{pathlib.Path().resolve()}/coin.log')) # presolve=1, warmStart=1
-        problem.solve(pulp.GUROBI_CMD(threads=16, timeLimit=14400)) # warmStart=1, keepFiles=0, logPath=f'{pathlib.Path().resolve()}/gurobi.log'
+        # problem.solve(pulp.COIN_CMD(threads=16, keepFiles=0, timeLimit=1200, logPath=f'{pathlib.Path().resolve()}/coin.log')) # presolve=1, warmStart=1
+        problem.solve(pulp.GUROBI_CMD(threads=16, timeLimit=600)) # warmStart=1, keepFiles=0, logPath=f'{pathlib.Path().resolve()}/gurobi.log'
 
         if pulp.LpStatus[self.problem.status] != "Optimal":
             self.log.error("Violated constraint:")
@@ -929,7 +951,7 @@ class SlotMachine(object):
                     before_rest=event.get("before_rest", 0),
                     after_rest=event.get("after_rest", 0),
                     meetup=event.get("meetup", 0),
-                    invite_only=event.get("irl_only", 0),
+                    invite_only=event.get("invite_only", 0),
                     similarities=similarities
                 )
             )
