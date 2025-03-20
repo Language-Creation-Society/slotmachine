@@ -69,6 +69,7 @@ class SlotMachine(object):
         self.suspected_constr = []
         self.suspected_var = []
 
+    # TODO optimise duration assignments
     def duration(self, talk_id) -> pulp.LpVariable:
         name = "LENGTH_%D" % (talk_id)
         if name in self.var_cache:
@@ -95,6 +96,20 @@ class SlotMachine(object):
         self.var_cache[name] = var
         return var
 
+    def adjacent(self, talk1_id, talk2_id, venue_id) -> pulp.LpVariable:
+        """A 0/1 variable that is 1 if talk 2 is adjacent to talk1"""
+        name = "ADJACENT_V_%d_%d_%d" % (talk1_id, talk2_id, venue_id)
+        if name in self.var_cache:
+            return self.var_cache[name]
+
+        if talk1_id == talk2_id:
+            var = pulp.LpVariable(name, lowBound=0, upBound=0, cat="Binary") # cat="Integer")
+        else:
+            var = pulp.LpVariable(name, cat="Binary")
+
+        self.var_cache[name] = var
+        return var
+
     def simultaneous(self, talk1_id, talk2_id) -> pulp.LpVariable:
         """A 0/1 variable that is 1 if talk 1 & talk 2 are simultaneous in different places"""
         name = "SIMULTANEOUS_V_%d_%d" % (talk1_id, talk2_id)
@@ -105,6 +120,34 @@ class SlotMachine(object):
             var = pulp.LpVariable(name, lowBound=0, upBound=0, cat="Binary") # cat="Integer")
         else:
             var = pulp.LpVariable(name, cat="Binary")
+
+        self.var_cache[name] = var
+        return var
+
+    def distance(self, talk1_id, talk2_id) -> pulp.LpVariable:
+        "Signed integer number of slots between start of talk1 and talk2"
+        name = "DISTANCE_V_%d_%d" % (talk1_id, talk2_id)
+        if name in self.var_cache:
+            return self.var_cache[name]
+
+        # if talk1_id == talk2_id:
+        #     var = pulp.LpVariable(name, lowBound=0, upBound=0, cat="Integer")
+        # else:
+        var = pulp.LpVariable(name, cat="Integer")
+
+        self.var_cache[name] = var
+        return var
+
+    def abs_distance(self, talk1_id, talk2_id) -> pulp.LpVariable:
+        "Absolute integer number of slots between talk1 and talk2"
+        name = "ABS_DISTANCE_V_%d_%d" % (talk1_id, talk2_id)
+        if name in self.var_cache:
+            return self.var_cache[name]
+
+        if talk1_id == talk2_id:
+            var = pulp.LpVariable(name, lowBound=0, upBound=0, cat="Integer")
+        else:
+            var = pulp.LpVariable(name, lowBound=0, cat="Integer")
 
         self.var_cache[name] = var
         return var
@@ -266,6 +309,19 @@ class SlotMachine(object):
                     name = "ONE_ACTIVE_%d_%d" % (vid, slot)
                 )
 
+        # it's only possible to attend a thing when it's active
+        for talk in talks:
+            for slot in self.slots_available:
+                for person in people:
+                    self.problem.addConstraint(
+                        self.attending_at(slot, talk.id, person.id)
+                        <= pulp.lpSum(
+                            self.active(slot, talk.id, vid)
+                            for vid in venue_ids
+                        ),
+                        name = "ATTEND_AVAILABILITY_%d_%d_%d" % (talk.id, slot, person.id)
+                    )
+
         # people can attend at most one thing at a time
         for person in people:
             for slot in self.slots_available:
@@ -276,6 +332,38 @@ class SlotMachine(object):
                     )
                     <= 1,
                     name = "UNIPRESENCE_%d_%d" % (person.id, slot)
+                )
+
+        # this just sets the distance variable
+        # start time of talk2 - start time of talk1 = distance
+        for talk1 in talks:
+            for talk2 in talks:
+                self.problem.addConstraint(
+                    pulp.LpAffineExpression([
+                        (self.start_var(s, talk2.id, vid), s)
+                        for s in self.slots_available
+                        for vid in venue_ids
+                    ] + [
+                        (self.start_var(s, talk1.id, vid), -s)
+                        for s in self.slots_available
+                        for vid in venue_ids
+                    ])
+                    == self.distance(talk1.id, talk2.id),
+                    name = "DISTANCE_C_%d_%d" % (talk2.id, talk1.id)
+                )
+
+        # these set the abs_distance variable
+        for talk1 in talks:
+            for talk2 in talks:
+                self.problem.addConstraint(
+                    self.distance(talk1.id, talk2.id)
+                    <= self.abs_distance(talk1.id, talk2.id),
+                    name = "ABS_DISTANCE_12_C_%d_%d" % (talk2.id, talk1.id)
+                )
+                self.problem.addConstraint(
+                    self.distance(talk2.id, talk1.id)
+                    <= self.abs_distance(talk1.id, talk2.id),
+                    name = "ABS_DISTANCE_21_C_%d_%d" % (talk2.id, talk1.id)
                 )
 
         # this just sets the adjacency variable, it isn't a constraint as such unless we tie adjacent_or_before to something else
@@ -295,6 +383,23 @@ class SlotMachine(object):
                         ]) + 100000 * self.adjacent_or_before(talk1.id, talk2.id, vid)
                         <= 100000 + talk2.duration,
                         name = "ADJACENT_OR_BEFORE_C_%d_%d_%d" % (talk2.id, talk1.id, vid)
+                    )
+
+        # these set the adjacency variable
+        for talk1 in talks:
+            for talk2 in talks:
+                for vid in venue_ids:
+                    self.problem.addConstraint(
+                        self.adjacent_or_before(talk1.id, talk2.id, vid)
+                        + self.adjacent_or_before(talk2.id, talk1.id, vid)
+                        - 1
+                        <= self.adjacent(talk1.id, talk2.id, vid),
+                        name = "ADJACENT_C_%d_%d_%d" % (talk1.id, talk2.id, vid)
+                    )
+                    self.problem.addConstraint(
+                        self.adjacent_or_before(talk1.id, talk2.id, vid)
+                        >= self.adjacent(talk1.id, talk2.id, vid),
+                        name = "ADJACENT_C2_%d_%d_%d" % (talk1.id, talk2.id, vid)
                     )
 
         # TODO
@@ -395,11 +500,12 @@ class SlotMachine(object):
 
         # require speakers to attend
         for talk in talks:
-            self.problem.addConstraint(
-                self.attending_some(talk.id, speaker_id)
-                == 1,
-                name = "SPEAKER_ATTENDS_%d_%d" % (talk.id, speaker_id)
-            )
+            for speaker_id in talk.speakers:
+                self.problem.addConstraint(
+                    self.attending_some(talk.id, speaker_id)
+                    == 1,
+                    name = "SPEAKER_ATTENDS_%d_%d" % (talk.id, speaker_id)
+                )
 
         # people attend non-meetup talks in full or not at all
         for talk in talks:
@@ -431,8 +537,9 @@ class SlotMachine(object):
         for person in people:
             self.problem.addConstraint(
                 pulp.lpSum(
-                    self.attending_at(s, talk.id, person.id)
+                    self.attending_at(s, t, person.id)
                     for s in (self.slots_available - set(person.slots))
+                    for t in talk_ids
                 )
                 == 0,
                 name = "PERSON_AVAILABILITY_%d" % (person.id)
@@ -493,14 +600,14 @@ class SlotMachine(object):
                     name = "PREREQS_%d_%d" % (talk2.id, t1id)
                 )
 
-        # Require rests (talk2) to come at least an hour after the prior rest (talk1):
-        # start time of talk2 - start time of talk1 >= duration of talk1 + 1h.
         for t2id in rest_talks:
             talk2 = self.talks_by_id[t2id]
             if talk2.rest == 1:
                 for t1id in talk2.prereqs:
                     talk1 = self.talks_by_id[t1id]
                     if talk1.rest == 1:
+                        # Require rests (talk2) to come at least an hour after the prior rest (talk1):
+                        # start time of talk2 - start time of talk1 >= duration of talk1 + 1h.
                         self.problem.addConstraint(
                             pulp.LpAffineExpression([
                                 (self.start_var(s, t2id, vid), s)
@@ -514,15 +621,7 @@ class SlotMachine(object):
                             >= talk1.duration + math.ceil(60/self.SLOT_INCREMENT),
                             name = "REST_MIN_SPACING_%d_%d" % (t2id, t1id)
                         )
-
-        # Require rests (talk2) to come no more than 2.5 hours after the prior rest (talk1):
-        # start time of talk2 - start time of talk1 <= duration of talk1 + 2.5h.
-        for t2id in rest_talks:
-            talk2 = self.talks_by_id[t2id]
-            if talk2.rest == 1:
-                for t1id in talk2.prereqs:
-                    talk1 = self.talks_by_id[t1id]
-                    if talk1.rest == 1:
+                        # Require rests (talk2) to come no more than 2 hours after the prior rest (talk1):
                         self.problem.addConstraint(
                             pulp.LpAffineExpression([
                                 (self.start_var(s, t2id, vid), s)
@@ -533,61 +632,64 @@ class SlotMachine(object):
                                 for s in self.slots_available
                                 for vid in venue_ids
                             ])
-                            <= talk1.duration + math.ceil(150/self.SLOT_INCREMENT),
+                            <= talk1.duration + math.ceil(120/self.SLOT_INCREMENT),
                             name = "REST_MAX_SPACING_%d_%d" % (t2id, t1id)
                         )
 
         # Require some things directly before rests
         for t in talks:
-            if t.before_rest:
+            if (t.before_rest == 1):
                 for slot in self.slots_available:
-                    self.problem.addConstraint(
-                        pulp.lpSum(
-                            (self.active(slot, t.id, vid) * t.before_rest * 100)
-                            for vid in venue_ids
+                    for vid in venue_ids:
+                        self.problem.addConstraint(
+                            pulp.lpSum(
+                                (self.active(slot, t.id, vid) * t.before_rest * 100)
+                            )
+                            # any nonrest after this breaks the constraint
+                            + pulp.lpSum(
+                                self.active(slot + 1, t2id, vid)
+                                for t2id in (set(nonrest_talks) - set([t.id]))
+                            )
+                            # itself, or a rest, must be after each of its slots
+                            - self.active(slot + 1, t.id, vid)
+                            - pulp.lpSum(
+                                self.active(slot + 1, t2id, vid2)
+                                for t2id in set(rest_talks)
+                                for vid2 in venue_ids
+                            )
+                            <= 99,
+                            name = "BEFORE_REST_%d_%d_%d" % (t.id, slot, vid)
                         )
-                        + pulp.lpSum(
-                            self.active(slot + 1, t2id, vid)
-                            for t2id in (set(nonrest_talks) - set([t.id]))
-                            for vid in venue_ids
-                        )
-                        - pulp.lpSum(
-                            self.active(slot + 1, t2id, vid)
-                            for t2id in set(rest_talks)
-                            for vid in venue_ids
-                        )
-                        <= 100,
-                        name = "BEFORE_REST_%d_%d" % (t.id, slot)
-                    )
 
         # Require some things directly after rests
         for t in talks:
-            if t.after_rest:
+            if (t.after_rest == 1):
                 for slot in self.slots_available:
-                    self.problem.addConstraint(
-                        pulp.lpSum(
-                            (self.active(slot, t.id, vid) * t.after_rest * 100)
-                            for vid in venue_ids
+                    for vid in venue_ids:
+                        self.problem.addConstraint(
+                            pulp.lpSum(
+                                (self.active(slot, t.id, vid) * t.after_rest * 100)
+                            )
+                            + pulp.lpSum(
+                                self.active(slot - 1, t2id, vid)
+                                for t2id in (set(nonrest_talks) - set([t.id]))
+                            )
+                            - self.active(slot - 1, t.id, vid)
+                            - pulp.lpSum(
+                                self.active(slot - 1, t2id, vid2)
+                                for t2id in set(rest_talks)
+                                for vid2 in venue_ids
+                            )
+                            <= 99,
+                            name = "AFTER_REST_%d_%d_%d" % (t.id, slot, vid)
                         )
-                        + pulp.lpSum(
-                            self.active(slot - 1, t2id, vid)
-                            for t2id in (set(nonrest_talks) - set([t.id]))
-                            for vid in venue_ids
-                        )
-                        - pulp.lpSum(
-                            self.active(slot - 1, t2id, vid)
-                            for t2id in set(rest_talks)
-                            for vid in venue_ids
-                        )
-                        <= 99,
-                        name = "AFTER_REST_%d_%d" % (t.id, slot)
-                    )
 
         # plenary talks can't have anything else parallel
         for slot in self.slots_available:
             self.problem.addConstraint(
                 pulp.lpSum(
-                    (self.active(slot, t.id, vid) * t.plenary * 100) + self.active(slot, t.id, vid)
+                    (self.active(slot, t.id, vid) * t.plenary * 100)
+                    + self.active(slot, t.id, vid)
                     for t in talks
                     for vid in venue_ids
                 )
@@ -623,10 +725,10 @@ class SlotMachine(object):
         #                 )
 
         self.problem += (
-            5
+            10
             * pulp.lpSum(
                 # try to have similar talks together
-                self.adjacent_or_before(talk1.id, talk2.id, vid) * max(talk1.similarities.get(talk2.id, 0), talk2.similarities.get(talk1.id, 0))
+                self.adjacent(talk1.id, talk2.id, vid) * max(talk1.similarities.get(talk2.id, 0), talk2.similarities.get(talk1.id, 0))
                 for vid in venue_ids
                 for talk1 in talks
                 for talk2 in talks
@@ -639,7 +741,7 @@ class SlotMachine(object):
                 for pid in people_ids # people_with_preferences_ids
                 for s in self.slots_available
             )
-            + 5
+            + 10
             * pulp.lpSum(
                 # attendee preferences
                 (
@@ -665,10 +767,19 @@ class SlotMachine(object):
             )
             + 5
             * pulp.lpSum(
+                # Maximise the number of things in speakers' preferred times
+                self.active(s, t.id, vid)
+                for vid in venue_ids
+                for t in talks
+                for p in t.speakers
+                for s in self.people_by_id[p].preferred_slots
+            )
+            + 5
+            * pulp.lpSum(
                 # Maximise the number of things in their preferred venues (for putting big talks on big stages)
                 self.active(s, t.id, vid)
                 for t in talks
-                for vid in talk.preferred_venues
+                for vid in t.preferred_venues
                 for s in self.slots_available
             )
             + 10
@@ -726,7 +837,7 @@ class SlotMachine(object):
         # We use COIN_CMD() over COIN() as it allows us to run in parallel mode
 
         # problem.solve(pulp.COIN_CMD(threads=16, keepFiles=0, timeLimit=1200, logPath=f'{pathlib.Path().resolve()}/coin.log')) # presolve=1, warmStart=1
-        problem.solve(pulp.GUROBI_CMD(threads=16, timeLimit=600)) # warmStart=1, keepFiles=0, logPath=f'{pathlib.Path().resolve()}/gurobi.log'
+        problem.solve(pulp.GUROBI_CMD(threads=16, timeLimit=300)) # warmStart=1, keepFiles=0, logPath=f'{pathlib.Path().resolve()}/gurobi.log'
 
         if pulp.LpStatus[self.problem.status] != "Optimal":
             self.log.error("Violated constraint:")
