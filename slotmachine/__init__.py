@@ -27,6 +27,7 @@ class Unsatisfiable(Exception):
 
 class SlotMachine(object):
     SLOT_INCREMENT=5 # minutes of granularity
+    BIGNUM=2**32
 
     Session = namedtuple(
         "Session",
@@ -88,10 +89,10 @@ class SlotMachine(object):
         if name in self.var_cache:
             return self.var_cache[name]
 
-        if talk1_id == talk2_id:
-            var = pulp.LpVariable(name, lowBound=0, upBound=0, cat="Binary") # cat="Integer")
-        else:
-            var = pulp.LpVariable(name, cat="Binary")
+        # if talk1_id == talk2_id:
+        #     var = pulp.LpVariable(name, lowBound=0, upBound=0, cat="Binary") # cat="Integer")
+        # else:
+        var = pulp.LpVariable(name, cat="Binary")
 
         self.var_cache[name] = var
         return var
@@ -102,10 +103,10 @@ class SlotMachine(object):
         if name in self.var_cache:
             return self.var_cache[name]
 
-        if talk1_id == talk2_id:
-            var = pulp.LpVariable(name, lowBound=0, upBound=0, cat="Binary") # cat="Integer")
-        else:
-            var = pulp.LpVariable(name, cat="Binary")
+        # if talk1_id == talk2_id:
+        #     var = pulp.LpVariable(name, lowBound=0, upBound=0, cat="Binary") # cat="Integer")
+        # else:
+        var = pulp.LpVariable(name, cat="Binary")
 
         self.var_cache[name] = var
         return var
@@ -366,8 +367,8 @@ class SlotMachine(object):
                     name = "ABS_DISTANCE_21_C_%d_%d" % (talk2.id, talk1.id)
                 )
 
-        # this just sets the adjacency variable, it isn't a constraint as such unless we tie adjacent_or_before to something else
-        # start time of talk2 - start time of talk1 + adjacencyvar*bignum <= bignum + talk2 duration
+        # this just sets the adjacency variable, it isn't a constraint as such unless we tie it to something else (e.g. in the weight function)
+        # start time of talk2 - start time of talk1 + adjacencyvar*bignum <= bignum + talk1 duration
         for talk1 in talks:
             for talk2 in talks:
                 for vid in venue_ids:
@@ -380,15 +381,22 @@ class SlotMachine(object):
                             (self.start_var(s, talk1.id, vid), -s)
                             for s in self.slots_available
                             # for vid in venue_ids
-                        ]) + 100000 * self.adjacent_or_before(talk1.id, talk2.id, vid)
-                        <= 100000 + talk2.duration,
+                        ])
+                        + (3 * self.BIGNUM * self.adjacent_or_before(talk1.id, talk2.id, vid))
+                        <= self.BIGNUM * (
+                            1
+                            + pulp.lpSum(
+                                self.start_var(s, talk1.id, vid)
+                                for s in self.slots_available
+                            )
+                            + pulp.lpSum(
+                                self.start_var(s, talk2.id, vid)
+                                for s in self.slots_available
+                            )
+                        )
+                        + talk1.duration,
                         name = "ADJACENT_OR_BEFORE_C_%d_%d_%d" % (talk2.id, talk1.id, vid)
                     )
-
-        # these set the adjacency variable
-        for talk1 in talks:
-            for talk2 in talks:
-                for vid in venue_ids:
                     self.problem.addConstraint(
                         self.adjacent_or_before(talk1.id, talk2.id, vid)
                         + self.adjacent_or_before(talk2.id, talk1.id, vid)
@@ -430,8 +438,8 @@ class SlotMachine(object):
         #                 (self.start_var(s, talk1.id, vid), -s)
         #                 for s in self.slots_available
         #                 for vid in venue_ids
-        #             ]) + 100000 * self.simultaneous(talk1.id, talk2.id)
-        #             <= 100000 + talk2.duration,
+        #             ]) + self.BIGNUM * self.simultaneous(talk1.id, talk2.id)
+        #             <= self.BIGNUM + talk2.duration,
         #             name = "SIMULTANEOUS_C_%d_%d" % (talk2.id, talk1.id)
         #         )
 
@@ -643,7 +651,7 @@ class SlotMachine(object):
                     for vid in venue_ids:
                         self.problem.addConstraint(
                             pulp.lpSum(
-                                (self.active(slot, t.id, vid) * t.before_rest * 100)
+                                (self.active(slot, t.id, vid) * t.before_rest * self.BIGNUM)
                             )
                             # any nonrest after this breaks the constraint
                             + pulp.lpSum(
@@ -657,7 +665,7 @@ class SlotMachine(object):
                                 for t2id in set(rest_talks)
                                 for vid2 in venue_ids
                             )
-                            <= 99,
+                            <= self.BIGNUM - 1,
                             name = "BEFORE_REST_%d_%d_%d" % (t.id, slot, vid)
                         )
 
@@ -668,7 +676,7 @@ class SlotMachine(object):
                     for vid in venue_ids:
                         self.problem.addConstraint(
                             pulp.lpSum(
-                                (self.active(slot, t.id, vid) * t.after_rest * 100)
+                                (self.active(slot, t.id, vid) * t.after_rest * self.BIGNUM)
                             )
                             + pulp.lpSum(
                                 self.active(slot - 1, t2id, vid)
@@ -680,7 +688,7 @@ class SlotMachine(object):
                                 for t2id in set(rest_talks)
                                 for vid2 in venue_ids
                             )
-                            <= 99,
+                            <= self.BIGNUM - 1,
                             name = "AFTER_REST_%d_%d_%d" % (t.id, slot, vid)
                         )
 
@@ -688,12 +696,12 @@ class SlotMachine(object):
         for slot in self.slots_available:
             self.problem.addConstraint(
                 pulp.lpSum(
-                    (self.active(slot, t.id, vid) * t.plenary * 100)
+                    (self.active(slot, t.id, vid) * t.plenary * self.BIGNUM)
                     + self.active(slot, t.id, vid)
                     for t in talks
                     for vid in venue_ids
                 )
-                <= 101,
+                <= self.BIGNUM + 1,
                 name = "PLENARY_EXCLUSIVITY_%d" % (slot)
             )
 
@@ -837,7 +845,7 @@ class SlotMachine(object):
         # We use COIN_CMD() over COIN() as it allows us to run in parallel mode
 
         # problem.solve(pulp.COIN_CMD(threads=16, keepFiles=0, timeLimit=1200, logPath=f'{pathlib.Path().resolve()}/coin.log')) # presolve=1, warmStart=1
-        problem.solve(pulp.GUROBI_CMD(threads=16, timeLimit=300)) # warmStart=1, keepFiles=0, logPath=f'{pathlib.Path().resolve()}/gurobi.log'
+        problem.solve(pulp.GUROBI_CMD(threads=16, timeLimit=1200)) # warmStart=1, keepFiles=0, logPath=f'{pathlib.Path().resolve()}/gurobi.log'
 
         if pulp.LpStatus[self.problem.status] != "Optimal":
             self.log.error("Violated constraint:")
